@@ -7,6 +7,7 @@ CREATE SCHEMA IF NOT EXISTS public;
 CREATE SCHEMA IF NOT EXISTS modulo_proyectos;
 CREATE SCHEMA IF NOT EXISTS modulo_residencias;
 CREATE SCHEMA IF NOT EXISTS modulo_investigacion;
+CREATE SCHEMA IF NOT EXISTS modulo_practicas;
 
 -- ================================================
 -- ESQUEMA PÚBLICO - TABLAS COMPARTIDAS
@@ -91,6 +92,63 @@ CREATE TABLE public.alumnos(
     id_carrera BIGINT REFERENCES public.carreras(id_carrera)
 );
  insert into alumnos values(1,1,"20210001",4,"A","1");
+
+-- ================================================
+-- MÓDULO DE PRACTICAS PROFESIONALES
+-- ================================================
+-- Tipos de apoyo (puedes usar CHECK si prefieres no usar ENUM)
+CREATE TYPE modulo_practicas.practica_tipo AS ENUM ('P1', 'P2', 'RES');
+CREATE TYPE modulo_practicas.periodo_label AS ENUM ('ENE-JUN', 'JUN-DIC');
+
+CREATE TABLE IF NOT EXISTS modulo_practicas.fechas (
+  id_fecha      SERIAL PRIMARY KEY,
+  nombre_documento VARCHAR(150) NOT NULL,
+  periodo       modulo_practicas.periodo_label NOT NULL,
+  fecha_apertura DATE NOT NULL,
+  fecha_cierre   DATE NOT NULL,
+  CONSTRAINT fechas_rango_valido CHECK (fecha_cierre > fecha_apertura)
+);
+
+CREATE TYPE modulo_practicas.doc_tipo AS ENUM (
+  'HOJA_PRESENTACION',
+  'CARTA_PRESENTACION',
+  'CARTA_ACEPTACION',
+  'REPORTE_FINAL',
+  'CARTA_LIBERACION'
+);
+
+CREATE TABLE IF NOT EXISTS modulo_practicas.documentos_alumno (
+  id_doc           BIGSERIAL PRIMARY KEY,
+  matricula        VARCHAR(30) NOT NULL REFERENCES public.alumnos(matricula) ON DELETE CASCADE,
+  practica         modulo_practicas.practica_tipo NOT NULL,
+  doc_tipo         modulo_practicas.doc_tipo NOT NULL,
+  nombre_archivo   TEXT NOT NULL,        -- ej. carta_presentacion.pdf
+  ruta_relativa    TEXT NOT NULL,        -- ej. alumnos/20260001/P1/carta_presentacion.pdf
+  mime_type        TEXT,
+  tamano_bytes     BIGINT,
+  checksum_sha256  TEXT,
+  subido_en        TIMESTAMP DEFAULT now(),
+  estado_revision  TEXT CHECK (estado_revision IN ('PENDIENTE','APROBADO','RECHAZADO')) DEFAULT 'PENDIENTE',
+
+  -- Evita duplicidad del mismo documento por alumno/práctica
+  CONSTRAINT unq_doc_por_tipo UNIQUE (matricula, practica, doc_tipo)
+);
+
+-- Índices útiles para búsqueda
+CREATE INDEX IF NOT EXISTS idx_doc_matricula_practica ON modulo_practicas.documentos_alumno (matricula, practica);
+CREATE INDEX IF NOT EXISTS idx_doc_practica ON modulo_practicas.documentos_alumno (practica);
+
+CREATE TABLE IF NOT EXISTS modulo_practicas.calificaciones (
+  id_calificacion SERIAL PRIMARY KEY,
+  matricula        VARCHAR(30) NOT NULL REFERENCES public.alumnos(matricula) ON DELETE CASCADE,
+  practica         modulo_practicas.practica_tipo NOT NULL,
+  calificacion     NUMERIC(5,2) NOT NULL CHECK (calificacion >= 0 AND calificacion <= 10),
+  observaciones    TEXT,
+  actualizado_en   TIMESTAMP DEFAULT now(),
+  CONSTRAINT unq_calif_por_practica UNIQUE (matricula, practica)
+);
+
+
 -- ================================================
 -- MÓDULO DE PROYECTOS (Original)
 -- ================================================
@@ -715,3 +773,33 @@ FROM public.alumnos a
 JOIN public.carreras c  ON c.id_carrera  = a.id_carrera
 JOIN public.facultades f ON f.id_facultad = c.id_facultad
 WHERE a.id_usuario = (SELECT id FROM public.usuarios WHERE rfc = 'FREM001231ABC');
+
+BEGIN;
+
+-- (Opcional) Si quieres vaciar:
+-- TRUNCATE TABLE public.alumnos RESTART IDENTITY CASCADE;
+
+-- Asegura que la matrícula no sea nula
+ALTER TABLE public.alumnos
+  ALTER COLUMN matricula SET NOT NULL;
+
+-- Quita la PK antigua (id_alumno)
+ALTER TABLE public.alumnos
+  DROP CONSTRAINT IF EXISTS alumnos_pkey;
+
+-- Pone matricula como nueva PK
+ALTER TABLE public.alumnos
+  ADD CONSTRAINT alumnos_pkey PRIMARY KEY (matricula);
+
+-- Deja id_alumno como clave candidata (para FKs existentes)
+ALTER TABLE public.alumnos
+  ADD CONSTRAINT alumnos_id_alumno_uk UNIQUE (id_alumno);
+
+COMMIT;
+
+/*
+ALTER TYPE modulo_practicas.periodo_label ADD VALUE IF NOT EXISTS 'ENE-JUN';
+ALTER TYPE modulo_practicas.periodo_label ADD VALUE IF NOT EXISTS 'JUN-DIC';
+*/
+
+ALTER TABLE public.alumnos ADD COLUMN tipo_practica modulo_practicas.practica_tipo;
